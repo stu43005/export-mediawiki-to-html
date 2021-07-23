@@ -1,0 +1,18 @@
+{
+  "extends": "@tsconfig/node10/tsconfig.json",
+  "compilerOptions": {
+    "declaration": true,
+    "importHelpers": true,
+    "outDir": "./dist",
+    "sourceMap": true,
+    "allowJs": true,
+    "typeRoots": [
+      "./node_modules/@types",
+      "./types",
+    ]
+  },
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
+}
