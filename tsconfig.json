@@ -6,6 +6,9 @@
     "outDir": "./dist",
     "sourceMap": true,
     "allowJs": true,
+    "lib": [
+      "DOM"
+    ],
     "typeRoots": [
       "./node_modules/@types",
       "./types",

@@ -2,6 +2,8 @@ import cheerio from "cheerio";
 import fs from "fs/promises";
 import path from "path";
 import Queue from 'queue';
+import puppeteer from 'puppeteer';
+import { ResponseType } from 'axios';
 import { md5, mkdir } from "./utils";
 import { baseUrl, getWikiHtml, getWikiText, httpClient } from "./wiki";
 
@@ -15,6 +17,7 @@ const excludes = [
   "Template",
   "MediaWiki",
 ];
+const wikiDataPath = `./scripts/wiki_data.js`;
 
 const queue = new Queue({
   concurrency: 5,
@@ -24,9 +27,29 @@ const queue = new Queue({
 async function main() {
   const mainpageName = await getWikiText("MediaWiki:Mainpage");
   qadded.add(mainpageName);
+
+  await processWikiData(mainpageName);
   await processPage(mainpageName);
   await writeRedirectPage("index", mainpageName);
   queue.start();
+}
+
+async function processWikiData(pagename: string) {
+  const browser = await puppeteer.launch();
+  const page = await browser.newPage();
+  await page.goto(`${baseUrl}/index.php/${pagename}`);
+  await page.waitForNetworkIdle();
+
+  const wiki_data = await page.evaluate(() => {
+    return localStorage.getItem('MediaWikiModuleStore:wiki_data');
+  });
+
+  await browser.close();
+
+  const outPath = path.join(exportPath, wikiDataPath);
+  await mkdir(path.dirname(outPath));
+  await fs.writeFile(outPath, `localStorage.setItem('MediaWikiModuleStore:wiki_data', ${JSON.stringify(wiki_data)})`, { encoding: 'utf-8' });
+  return wiki_data;
 }
 
 const downloaded = new Set<string>();
@@ -62,7 +85,7 @@ async function processPage(pagename: string) {
           $(element).attr("href", path);
           if (!qadded.has(href)) {
             qadded.add(href);
-            queue.push(() => downloadFile(href, path));
+            queue.push(() => downloadFile(href, path, 'text'));
           }
         }
         return;
@@ -74,7 +97,7 @@ async function processPage(pagename: string) {
           $(element).attr("src", path);
           if (!qadded.has(src)) {
             qadded.add(src);
-            queue.push(() => downloadFile(src, path));
+            queue.push(() => downloadFile(src, path, 'text'));
           }
         }
         return;
@@ -117,6 +140,8 @@ async function processPage(pagename: string) {
       }
     });
 
+    $('head').prepend(`<script src="${wikiDataPath}"></script>`);
+
     // save
     await mkdir(path.dirname(outPath));
     await fs.writeFile(outPath, $.html());
@@ -127,7 +152,7 @@ async function processPage(pagename: string) {
   }
 }
 
-async function downloadFile(fullurl: string, out: string) {
+async function downloadFile(fullurl: string, out: string, responseType: ResponseType = 'arraybuffer') {
   const outPath = path.join(exportPath, out);
   // check exists
   if (downloaded.has(fullurl)) return;
@@ -135,15 +160,34 @@ async function downloadFile(fullurl: string, out: string) {
 
   try {
     const res = await httpClient.get(fullurl, {
-      responseType: 'arraybuffer',
+      responseType,
     });
-    const data = res.data as ArrayBuffer;
     await mkdir(path.dirname(outPath));
-    await fs.writeFile(outPath, new Uint8Array(data));
+    if (responseType === 'arraybuffer') {
+      const data = res.data as ArrayBuffer;
+      await fs.writeFile(outPath, new Uint8Array(data));
+    } else if (responseType === 'text') {
+      let data = res.data as string;
+
+      const loadRegex = /\/?load\.php\?([-a-zA-Z0-9()!@:%_\+.~#?&\/\/=]*)/;
+      let match: RegExpExecArray | null;
+      while ((match = loadRegex.exec(data)) !== null) {
+        const src = match[0];
+        const path = `./scripts/${md5(src)}.js`;
+        if (!qadded.has(src)) {
+          qadded.add(src);
+          queue.push(() => downloadFile(src, path, 'text'));
+        }
+        data = data.replace(src, path);
+      }
+
+      await fs.writeFile(outPath, data, { encoding: 'utf-8' });
+    }
     console.log(`Downloaded file: ${fullurl}`);
 
   } catch (error) {
     console.error(`Error on download file ${fullurl}:`, error);
+    debugger;
   }
 }
 
